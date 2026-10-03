@@ -16,7 +16,11 @@ from .storage import Database
 
 
 IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{1,63}$")
-ROLES = frozenset({"admin", "operator", "reviewer", "auditor"})
+ROLES = frozenset({
+    "admin", "operator", "reviewer", "auditor",
+    # 文化素材权利链核验域扩展角色
+    "creator", "licensing_officer", "conflict_reviewer", "judge",
+})
 
 
 class DomainService:
@@ -55,21 +59,28 @@ class DomainService:
             raise PermissionDenied("当前角色不能执行该动作")
 
     def _idempotent(self, connection, *, request_id: str, action: str,
-                    payload: dict[str, Any], create: Callable[[], tuple[str, str, dict[str, Any]]]) -> WriteReceipt:
+                    payload: dict[str, Any], create: Callable[..., tuple[str, str, dict[str, Any]]]) -> WriteReceipt:
         request_id = self._identifier(request_id, "request_id")
         payload_hash = digest(payload)
         row = connection.execute("SELECT * FROM request_receipts WHERE request_id=?", (request_id,)).fetchone()
         if row:
             if row["action"] != action or row["payload_hash"] != payload_hash:
                 raise ConflictError("request_id 已被不同内容使用")
-            return WriteReceipt(request_id, row["resource_type"], row["resource_id"], True)
-        resource_type, resource_id, response = create()
+            return WriteReceipt(request_id, row["resource_type"], row["resource_id"], True,
+                                json.loads(row["response_json"]))
+        result = create()
+        # create 可返回第四项 deduped：新请求编号命中了既有内容（如相同证据哈希）。
+        deduped = False
+        if len(result) == 4:
+            resource_type, resource_id, response, deduped = result
+        else:
+            resource_type, resource_id, response = result
         connection.execute(
             "INSERT INTO request_receipts(request_id,action,payload_hash,resource_type,resource_id,response_json,created_at) "
             "VALUES(?,?,?,?,?,?,?)",
             (request_id, action, payload_hash, resource_type, resource_id, canonical_json(response), self._now()),
         )
-        return WriteReceipt(request_id, resource_type, resource_id, False)
+        return WriteReceipt(request_id, resource_type, resource_id, bool(deduped), response)
 
     def register_organization(self, *, request_id: str, actor_id: str,
                               organization_id: str, name: str) -> WriteReceipt:

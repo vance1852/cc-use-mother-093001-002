@@ -69,13 +69,15 @@ CREATE TABLE IF NOT EXISTS audit_events (
 class Database:
     """管理 SQLite 数据库并为服务提供短事务。"""
 
-    def __init__(self, path: str | Path = ":memory:") -> None:
+    def __init__(self, path: str | Path = ":memory:", *, schema_extra: str = "") -> None:
         self.path = str(path)
         self.connection = sqlite3.connect(self.path, isolation_level=None, check_same_thread=False)
         self.connection.row_factory = sqlite3.Row
         self.connection.execute("PRAGMA foreign_keys = ON")
         self.connection.execute("PRAGMA busy_timeout = 5000")
         self.connection.executescript(SCHEMA)
+        if schema_extra:
+            self.connection.executescript(schema_extra)
 
     @contextmanager
     def transaction(self, immediate: bool = False) -> Iterator[sqlite3.Connection]:
